@@ -36,11 +36,11 @@ def setup_tensor_parallel():
         return torch.device(f"cuda:{dist.get_rank()}")
     return torch.device("cuda")
 
-def decode_latents_in_batches(pipe, latents):
+def decode_latents_in_batches(pipe, latents, device):
     """Decode latents in smaller batches to avoid OOM"""
     all_images = []
     for i in range(0, latents.shape[0], VAE_BATCH_SIZE):
-        batch_latents = latents[i:i + VAE_BATCH_SIZE]
+        batch_latents = latents[i:i + VAE_BATCH_SIZE].to(device)
         # Scale and decode the image latents with vae
         batch_latents = 1 / pipe.vae.config.scaling_factor * batch_latents
         with torch.inference_mode():
@@ -51,9 +51,10 @@ def decode_latents_in_batches(pipe, latents):
         batch_images = (batch_images * 255).round().astype("uint8")
         batch_pil_images = [Image.fromarray(image) for image in batch_images]
         all_images.extend(batch_pil_images)
+        torch.cuda.empty_cache()  # Clear GPU memory after each batch
     return all_images
 
-def generate_images(pipe, prompts):
+def generate_images(pipe, prompts, device):
     """Generate images with batched VAE decoding"""
     with torch.inference_mode():
         # Run text encoder and unet
@@ -61,8 +62,10 @@ def generate_images(pipe, prompts):
             prompts,
             output_type="latent",
         )
+        # Ensure latents are on the correct device
+        latents = outputs.images.to(device)
         # Decode latents in batches
-        images = decode_latents_in_batches(pipe, outputs.images)
+        images = decode_latents_in_batches(pipe, latents, device)
     return images
 
 def create_pipeline():
@@ -111,6 +114,12 @@ def create_pipeline():
             cpu_offload=CPUOffload(offload_params=False)
         )
         
+        # Move other components to device
+        pipe.text_encoder = pipe.text_encoder.to(device)
+        pipe.text_encoder_2 = pipe.text_encoder_2.to(device)
+        pipe.vae = pipe.vae.to(device)
+        pipe.scheduler = pipe.scheduler.to(device)
+        
         print("\nModel distribution:")
         print(f"World size: {dist.get_world_size()}")
         print(f"Current rank: {dist.get_rank()}")
@@ -120,10 +129,10 @@ def create_pipeline():
         pipe = pipe.to(device)
         print(f"\nRunning on device: {device}")
     
-    return pipe
+    return pipe, device
 
 # Initialize pipeline
-pipe = create_pipeline()
+pipe, device = create_pipeline()
 
 # Enable CUDA profiling
 torch.cuda.empty_cache()
@@ -136,7 +145,7 @@ print("\nPerforming warmup iterations...")
 for i in range(N_WARMUP):
     with torch.inference_mode():
         nvtx.range_push(f"Warmup_{i}")
-        images = generate_images(pipe, prompts)
+        images = generate_images(pipe, prompts, device)
         nvtx.range_pop()
     print(f"Warmup iteration {i+1}/{N_WARMUP} complete")
 
@@ -152,7 +161,7 @@ for i in range(N_ITERATIONS):
     start_time = time.time()
     
     nvtx.range_push(f"Iteration_{i}")
-    images = generate_images(pipe, prompts)
+    images = generate_images(pipe, prompts, device)
     nvtx.range_pop()
     
     torch.cuda.synchronize()

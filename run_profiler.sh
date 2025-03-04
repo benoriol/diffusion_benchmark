@@ -7,8 +7,16 @@ mkdir -p profiling_results
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 OUTPUT_FILE="profiling_results/sdxl_profile_${TIMESTAMP}"
 
-# Get number of GPUs
-N_GPUS=$(nvidia-smi --query-gpu=gpu_name --format=csv,noheader | wc -l)
+# Get number of GPUs from CUDA_VISIBLE_DEVICES
+if [ -z "$CUDA_VISIBLE_DEVICES" ]; then
+    # If CUDA_VISIBLE_DEVICES is not set, count all available GPUs
+    N_GPUS=$(nvidia-smi --query-gpu=gpu_name --format=csv,noheader | wc -l)
+else
+    # Count comma-separated GPUs in CUDA_VISIBLE_DEVICES
+    N_GPUS=$(echo $CUDA_VISIBLE_DEVICES | tr ',' '\n' | wc -l)
+fi
+
+echo "Using $N_GPUS GPU(s) from CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-'all'}"
 
 if [ "$N_GPUS" -gt 1 ]; then
     echo "Running with tensor parallelism on $N_GPUS GPUs"
