@@ -1,48 +1,79 @@
-from diffusers import DiffusionPipeline
+from diffusers import DiffusionPipeline, UNet2DConditionModel
 import torch
 import time
 import torch.cuda.profiler as profiler
 import torch.cuda.nvtx as nvtx
-from accelerate import dispatch_model
-from accelerate.utils import get_balanced_memory
+from torch.distributed.fsdp import (
+    FullyShardedDataParallel as FSDP,
+    MixedPrecision,
+    BackwardPrefetch,
+    ShardingStrategy,
+    CPUOffload
+)
+from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
+import functools
+import torch.distributed as dist
 
 # Configuration
 N_WARMUP = 3  # Number of warmup iterations
 N_ITERATIONS = 10  # Number of measured iterations
 prompt = "A majestic mountain landscape at sunset"
 
+def setup_tensor_parallel():
+    # Initialize process group
+    dist.init_process_group(backend="nccl")
+    torch.cuda.set_device(dist.get_rank())
+
 def create_pipeline_with_tensor_parallel():
     print("Loading model with tensor parallelism...")
     
-    # Get the maximum memory available on each GPU
-    n_gpus = torch.cuda.device_count()
-    max_memory = {i: f"{torch.cuda.get_device_properties(i).total_memory // (1024*1024*1024)-2}GiB" for i in range(n_gpus)}
-    max_memory["cpu"] = "16GiB"  # Reserve some CPU memory as buffer
+    # Initialize distributed setup
+    setup_tensor_parallel()
     
-    # Initialize pipeline with balanced device map for tensor parallelism
+    # Load base model
     pipe = DiffusionPipeline.from_pretrained(
         "stabilityai/stable-diffusion-xl-base-1.0",
         torch_dtype=torch.float16,
         use_safetensors=True,
-        variant="fp16",
-        device_map="balanced",
-        max_memory=max_memory
+        variant="fp16"
     )
     
-    # Get balanced memory for each GPU
-    max_memory_per_gpu = get_balanced_memory(
+    # Configure FSDP settings
+    mp_policy = MixedPrecision(
+        param_dtype=torch.float16,
+        reduce_dtype=torch.float16,
+        buffer_dtype=torch.float16
+    )
+    
+    # Create size-based policy with fixed arguments
+    wrapping_policy = functools.partial(
+        size_based_auto_wrap_policy,
+        min_num_params=1_000_000,
+        recurse=True,
+        nonwrapped_numel=1_000_000
+    )
+    
+    # Wrap UNet with FSDP
+    pipe.unet = FSDP(
         pipe.unet,
-        dtype=torch.float16,
-        low_zero=False,
-        no_split_module_classes=["CrossAttention", "Attention"]
+        auto_wrap_policy=wrapping_policy,
+        mixed_precision=mp_policy,
+        sharding_strategy=ShardingStrategy.FULL_SHARD,
+        backward_prefetch=BackwardPrefetch.BACKWARD_PRE,
+        device_id=torch.cuda.current_device(),
+        cpu_offload=CPUOffload(offload_params=False)
     )
     
-    print("\nModel distribution across devices:")
-    print(f"UNet device map: {pipe.unet.hf_device_map}")
-    print(f"Text Encoder 1: {pipe.text_encoder.device}")
-    print(f"Text Encoder 2: {pipe.text_encoder_2.device}")
-    print(f"VAE: {pipe.vae.device}")
-    print(f"Memory per GPU: {max_memory_per_gpu}")
+    # Move other components to current device
+    device = torch.device(f"cuda:{dist.get_rank()}")
+    pipe.text_encoder = pipe.text_encoder.to(device)
+    pipe.text_encoder_2 = pipe.text_encoder_2.to(device)
+    pipe.vae = pipe.vae.to(device)
+    
+    print("\nModel distribution:")
+    print(f"World size: {dist.get_world_size()}")
+    print(f"Current rank: {dist.get_rank()}")
+    print(f"Device: {device}")
     
     return pipe
 
@@ -97,7 +128,11 @@ print(f"Min inference time: {min_time:.3f} seconds")
 print(f"Max inference time: {max_time:.3f} seconds")
 
 # Save the last generated image
-image.save("output.png")
+if dist.get_rank() == 0:  # Only save on main process
+    image.save("output.png")
+
+# Cleanup
+dist.destroy_process_group()
 
 
     
