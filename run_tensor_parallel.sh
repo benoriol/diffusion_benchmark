@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Get number of available GPUs
-N_GPUS=$(nvidia-smi --query-gpu=gpu_name --format=csv,noheader | wc -l)
+N_GPUS=$(echo ${CUDA_VISIBLE_DEVICES:-0} | tr ',' '\n' | wc -l)
 
 # Set required environment variables for distributed training
 export MASTER_ADDR="localhost"

@@ -5,6 +5,12 @@ import torch.cuda.profiler as profiler
 import torch.cuda.nvtx as nvtx
 import os
 from PIL import Image
+import argparse
+
+# Parse command line arguments
+parser = argparse.ArgumentParser(description='Run SDXL with profiling')
+parser.add_argument('--batch_size', type=int, default=8, help='Batch size for image generation')
+args = parser.parse_args()
 
 # Check if we're running in distributed mode
 is_distributed = int(os.environ.get("WORLD_SIZE", "1")) > 1
@@ -22,10 +28,11 @@ if is_distributed:
     import torch.distributed as dist
 
 # Configuration
-N_WARMUP = 3  # Number of warmup iterations
+N_WARMUP = 1  # Number of warmup iterations
 N_ITERATIONS = 10  # Number of measured iterations
-BATCH_SIZE = 8  # Number of images to generate in parallel
-VAE_BATCH_SIZE = 4  # Batch size for VAE decoding to avoid OOM
+# Get batch size from environment variable or fallback to command line arg
+BATCH_SIZE = int(os.environ.get("SDXL_BATCH_SIZE", args.batch_size))
+VAE_BATCH_SIZE = min(4, BATCH_SIZE)  # Batch size for VAE decoding to avoid OOM
 prompt = "A majestic mountain landscape at sunset"
 prompts = [prompt] * BATCH_SIZE  # Replicate prompt for batch processing
 

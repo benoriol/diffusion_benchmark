@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Use environment variable SDXL_BATCH_SIZE if set, otherwise use command line arg or default to 8
+export SDXL_BATCH_SIZE=${SDXL_BATCH_SIZE:-${1:-8}}
+
 # Create a directory for profiling results if it doesn't exist
 mkdir -p profiling_results
 
@@ -8,7 +11,9 @@ TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 OUTPUT_FILE="profiling_results/sdxl_profile_${TIMESTAMP}"
 
 # Get number of GPUs
-N_GPUS=$(nvidia-smi --query-gpu=gpu_name --format=csv,noheader | wc -l)
+N_GPUS=$(echo ${CUDA_VISIBLE_DEVICES:-0} | tr ',' '\n' | wc -l)
+
+echo "Running with batch size: $SDXL_BATCH_SIZE"
 
 if [ "$N_GPUS" -gt 1 ]; then
     echo "Running with tensor parallelism on $N_GPUS GPUs"
