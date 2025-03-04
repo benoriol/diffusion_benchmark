@@ -118,7 +118,6 @@ def create_pipeline():
         pipe.text_encoder = pipe.text_encoder.to(device)
         pipe.text_encoder_2 = pipe.text_encoder_2.to(device)
         pipe.vae = pipe.vae.to(device)
-        pipe.scheduler = pipe.scheduler.to(device)
         
         print("\nModel distribution:")
         print(f"World size: {dist.get_world_size()}")
