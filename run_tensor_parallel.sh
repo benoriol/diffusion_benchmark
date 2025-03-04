@@ -9,8 +9,8 @@ export MASTER_PORT="29500"
 export WORLD_SIZE=$N_GPUS
 
 # Run with tensor parallelism
-torchrun \
-    nsys profile \
+nsys profile \
+    torchrun \
         --trace=cuda,nvtx,osrt,cudnn,cublas \
         --sample=cpu \
         --output "profiling_results/sdxl_profile_$(date +"%Y%m%d_%H%M%S")" \
