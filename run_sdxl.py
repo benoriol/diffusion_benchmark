@@ -29,7 +29,7 @@ if is_distributed:
 
 # Configuration
 N_WARMUP = 1  # Number of warmup iterations
-N_ITERATIONS = 10  # Number of measured iterations
+N_ITERATIONS = 2  # Number of measured iterations
 # Get batch size from environment variable or fallback to command line arg
 BATCH_SIZE = int(os.environ.get("SDXL_BATCH_SIZE", args.batch_size))
 VAE_BATCH_SIZE = min(4, BATCH_SIZE)  # Batch size for VAE decoding to avoid OOM
