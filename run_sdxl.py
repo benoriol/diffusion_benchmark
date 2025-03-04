@@ -28,7 +28,7 @@ if is_distributed:
     import torch.distributed as dist
 
 # Configuration
-N_WARMUP = 1  # Number of warmup iterations
+N_WARMUP = 0  # Number of warmup iterations
 N_ITERATIONS = 2  # Number of measured iterations
 # Get batch size from environment variable or fallback to command line arg
 BATCH_SIZE = int(os.environ.get("SDXL_BATCH_SIZE", args.batch_size))
@@ -194,7 +194,7 @@ print(f"\nResults over {N_ITERATIONS} iterations:")
 print(f"Average inference time: {avg_time:.3f} seconds")
 print(f"Min inference time: {min_time:.3f} seconds")
 print(f"Max inference time: {max_time:.3f} seconds")
-print(f"Images per second: {BATCH_SIZE/avg_time:.2f}")
+print(f"Images per second: {50*BATCH_SIZE/avg_time:.2f}")
 
 # Cleanup
 if is_distributed:

@@ -10,9 +10,15 @@ export WORLD_SIZE=$N_GPUS
 
 # Run with tensor parallelism
 torchrun \
-    --nproc_per_node=$N_GPUS \
-    --master_addr=$MASTER_ADDR \
-    --master_port=$MASTER_PORT \
-    --nnodes=1 \
-    --node_rank=0 \
-    run_sdxl.py 
+    nsys profile \
+        --trace=cuda,nvtx,osrt,cudnn,cublas \
+        --sample=cpu \
+        --output "profiling_results/sdxl_profile_$(date +"%Y%m%d_%H%M%S")" \
+        --stats=true \
+        torchrun \
+            --nproc_per_node=$N_GPUS \
+            --master_addr=$MASTER_ADDR \
+            --master_port=$MASTER_PORT \
+            --nnodes=1 \
+            --node_rank=0 \
+            run_sdxl.pys
