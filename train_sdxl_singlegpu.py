@@ -60,7 +60,7 @@ class RandomNoiseDataset(Dataset):
 
 def main():
     
-    device = torch.device(f"cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(f"cuda")
 
     # Model with FP16
     model = StableDiffusionXLPipeline.from_pretrained(
@@ -180,7 +180,7 @@ def main():
                 if step % 10 == 0:  # Update loss display every 10 steps
                     progress_bar.set_postfix({"loss": f"{total_loss/10:.4f}"})
                     total_loss = 0
-                    progress_bar.update(1)
+                progress_bar.update(1)
                     
                 if step >= total_steps:
                     break

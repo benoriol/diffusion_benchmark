@@ -21,7 +21,7 @@ parser.add_argument("--micro_batch_size", type=int, default=1, help="Micro batch
 parser.add_argument("--learning_rate", type=float, default=1e-5, help="Learning rate")
 parser.add_argument("--dataset_size", type=int, default=1000, help="Number of samples in dataset")
 parser.add_argument("--image_size", type=int, default=128, help="Image size for training")
-parser.add_argument("--num_workers", type=int, default=16, help="Number of workers for dataloader")
+parser.add_argument("--num_workers", type=int, default=4, help="Number of workers for dataloader")
 
 args = parser.parse_args()
 
@@ -74,19 +74,19 @@ class RandomNoiseDataset(Dataset):
 def main(rank, world_size):
     ddp_setup(rank, world_size)
     # Device
-    #device = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
+    device = torch.device(f"cuda:{rank}")
 
     # Model with FP16
     model = StableDiffusionXLPipeline.from_pretrained(
         "stabilityai/stable-diffusion-xl-base-1.0",
         use_safetensors=True,
-    ).unet.to(dtype=torch.float16, device=f"cuda:{rank}")
+    ).unet.to(dtype=torch.float16, device=device)
     model.enable_gradient_checkpointing()
 
 
     optimizer = bnb.optim.Adam8bit(model.parameters(), lr=args.learning_rate)
     
-    model = DDP(model, device_ids=[rank]).to(dtype=torch.float16)
+    model = DDP(model, device_ids=[rank])
 
     # Enable gradient checkpointing to reduce memory usage
 
@@ -139,17 +139,17 @@ def main(rank, world_size):
                 batch = next(dataloader_iter)
                 
             # Move all batch tensors to device
-            latents = batch['latent'].to(dtype=torch.float16, device=f"cuda:{rank}")
-            text_embeddings = batch['text_embeddings'].to(dtype=torch.float16, device=f"cuda:{rank}")
-            text_embeds = batch['text_embeds'].to(dtype=torch.float16, device=f"cuda:{rank}")
-            time_ids = batch['time_ids'].to(dtype=torch.float16, device=f"cuda:{rank}")
+            latents = batch['latent'].to(dtype=torch.float16, device=device)
+            text_embeddings = batch['text_embeddings'].to(dtype=torch.float16, device=device)
+            text_embeds = batch['text_embeds'].to(dtype=torch.float16, device=device)
+            time_ids = batch['time_ids'].to(dtype=torch.float16, device=device)
             micro_batch_size = latents.shape[0]
             
             # Sample timesteps
             timesteps = torch.randint(
                 0, scheduler.config.num_train_timesteps, 
                 (micro_batch_size,), 
-            ).long()
+            ).long().to(device)
             
             # Add noise to latents
             noise = torch.randn_like(latents)
@@ -201,7 +201,7 @@ def main(rank, world_size):
                     if progress_bar is not None:
                         progress_bar.set_postfix({"loss": f"{total_loss/10:.4f}"})
                         total_loss = 0
-                        progress_bar.update(1)
+                progress_bar.update(1)
                     
                 if step >= total_steps:
                     break
@@ -213,4 +213,5 @@ def main(rank, world_size):
 
 if __name__ == "__main__":
     world_size = torch.cuda.device_count()
+    world_size = 1
     mp.spawn(main, args=(world_size,), nprocs=world_size)
