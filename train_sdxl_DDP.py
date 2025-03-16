@@ -201,7 +201,9 @@ def main(rank, world_size):
                     if progress_bar is not None:
                         progress_bar.set_postfix({"loss": f"{total_loss/10:.4f}"})
                         total_loss = 0
-                progress_bar.update(1)
+                
+                if progress_bar is not None:
+                    progress_bar.update(1)
                     
                 if step >= total_steps:
                     break
