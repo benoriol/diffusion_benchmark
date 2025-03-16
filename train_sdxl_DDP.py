@@ -15,7 +15,7 @@ import torch.multiprocessing as mp
 
 # Parse command line arguments
 parser = argparse.ArgumentParser(description="Train Stable Diffusion XL on random noise")
-parser.add_argument("--steps", type=int, default=1000, help="Number of training steps")
+parser.add_argument("--steps", type=int, default=100, help="Number of training steps")
 parser.add_argument("--batch_size", type=int, default=32, help="Batch size for training")
 parser.add_argument("--micro_batch_size", type=int, default=1, help="Micro batch size for gradient accumulation")
 parser.add_argument("--learning_rate", type=float, default=1e-5, help="Learning rate")
@@ -213,5 +213,5 @@ def main(rank, world_size):
 
 if __name__ == "__main__":
     world_size = torch.cuda.device_count()
-    world_size = 1
+    #world_size = 1
     mp.spawn(main, args=(world_size,), nprocs=world_size)
