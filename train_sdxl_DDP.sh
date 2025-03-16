@@ -115,8 +115,9 @@ if [ "$PROFILE" = true ]; then
     nsys profile --stats=true \
         --force-overwrite true \
         --output "$PROFILE_OUTPUT" \
-        --export=nsys-rep \
         --trace=cuda,nvtx,osrt,cudnn,cublas \
+        --sample=cpu \
+        --stats=true \
         python train_sdxl_DDP.py "${PYTHON_ARGS[@]}"
 else
     echo "Starting training..."
