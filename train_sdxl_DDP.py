@@ -13,6 +13,14 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 import torch.multiprocessing as mp
 
+# Import NVTX for profiling
+try:
+    import nvtx
+    NVTX_AVAILABLE = True
+except ImportError:
+    NVTX_AVAILABLE = False
+    print("NVTX not available. Install with: pip install nvtx")
+
 # Parse command line arguments
 parser = argparse.ArgumentParser(description="Train Stable Diffusion XL on random noise")
 parser.add_argument("--steps", type=int, default=100, help="Number of training steps")
@@ -22,19 +30,30 @@ parser.add_argument("--learning_rate", type=float, default=1e-5, help="Learning 
 parser.add_argument("--dataset_size", type=int, default=1000, help="Number of samples in dataset")
 parser.add_argument("--image_size", type=int, default=128, help="Image size for training")
 parser.add_argument("--num_workers", type=int, default=4, help="Number of workers for dataloader")
+parser.add_argument("--profile", action="store_true", help="Enable NVTX profiling markers")
 
 args = parser.parse_args()
 
 # Calculate gradient accumulation steps
 gradient_accumulation_steps = max(1, args.batch_size // args.micro_batch_size)
 
+# Profiling helper functions
+def nvtx_range_push(msg):
+    if NVTX_AVAILABLE and args.profile:
+        nvtx.range_push(msg)
+
+def nvtx_range_pop():
+    if NVTX_AVAILABLE and args.profile:
+        nvtx.range_pop()
 
 
 def ddp_setup(rank, world_size):
+    nvtx_range_push("ddp_setup")
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["MASTER_PORT"] = "12355"
     torch.cuda.set_device(rank)
     init_process_group(backend="nccl", world_size=world_size, rank=rank)
+    nvtx_range_pop()
     
 
 
@@ -72,28 +91,31 @@ class RandomNoiseDataset(Dataset):
 
 
 def main(rank, world_size):
+    nvtx_range_push("main")
     ddp_setup(rank, world_size)
     # Device
     device = torch.device(f"cuda:{rank}")
 
     # Model with FP16
+    nvtx_range_push("model_loading")
     model = StableDiffusionXLPipeline.from_pretrained(
         "stabilityai/stable-diffusion-xl-base-1.0",
         use_safetensors=True,
     ).unet.to(dtype=torch.float16, device=device)
     model.enable_gradient_checkpointing()
+    nvtx_range_pop()
 
-
+    nvtx_range_push("optimizer_setup")
     optimizer = bnb.optim.Adam8bit(model.parameters(), lr=args.learning_rate)
     
     model = DDP(model, device_ids=[rank])
-
-    # Enable gradient checkpointing to reduce memory usage
+    nvtx_range_pop()
 
     # Noise scheduler
     scheduler = DDPMScheduler(num_train_timesteps=1000)
 
     # Dataset and dataloader
+    nvtx_range_push("dataset_setup")
     dataset = RandomNoiseDataset(size=args.dataset_size, img_size=args.image_size)
 
     dataloader = DataLoader(
@@ -104,14 +126,13 @@ def main(rank, world_size):
         num_workers=args.num_workers, 
         pin_memory=True
     )
-
-    # 8-bit optimizer
-    
+    nvtx_range_pop()
 
     # Training parameters
     total_steps = args.steps  # Total number of training steps
 
     # Training loop
+    nvtx_range_push("training_loop")
     model.train()
     total_loss = 0
 
@@ -124,26 +145,32 @@ def main(rank, world_size):
     accumulated_samples = 0
 
     while step < total_steps:
+        nvtx_range_push(f"training_step_{step}")
         # Reset gradients at the beginning of each effective batch
         optimizer.zero_grad(set_to_none=True)
         
         # Gradient accumulation loop
         accumulated_loss = 0
         
-        for _ in range(gradient_accumulation_steps):
+        for acc_step in range(gradient_accumulation_steps):
+            nvtx_range_push(f"grad_accum_step_{acc_step}")
             # Get next batch
+            nvtx_range_push("data_loading")
             try:
                 batch = next(dataloader_iter)
             except (StopIteration, NameError):
                 dataloader_iter = iter(dataloader)
                 batch = next(dataloader_iter)
+            nvtx_range_pop()
                 
             # Move all batch tensors to device
+            nvtx_range_push("data_to_device")
             latents = batch['latent'].to(dtype=torch.float16, device=device)
             text_embeddings = batch['text_embeddings'].to(dtype=torch.float16, device=device)
             text_embeds = batch['text_embeds'].to(dtype=torch.float16, device=device)
             time_ids = batch['time_ids'].to(dtype=torch.float16, device=device)
             micro_batch_size = latents.shape[0]
+            nvtx_range_pop()
             
             # Sample timesteps
             timesteps = torch.randint(
@@ -152,10 +179,13 @@ def main(rank, world_size):
             ).long().to(device)
             
             # Add noise to latents
+            nvtx_range_push("add_noise")
             noise = torch.randn_like(latents)
             noisy_latents = scheduler.add_noise(latents, noise, timesteps)
+            nvtx_range_pop()
             
             # Forward pass with autocast
+            nvtx_range_push("forward_pass")
             with autocast():
                 # Pass all required arguments to the UNet
                 noise_pred = model(
@@ -171,22 +201,27 @@ def main(rank, world_size):
                 
                 # Scale the loss to account for gradient accumulation
                 scaled_loss = loss / gradient_accumulation_steps
+            nvtx_range_pop()
             
             # Backward pass
+            nvtx_range_push("backward_pass")
             scaled_loss.backward()
+            nvtx_range_pop()
             
                 
             accumulated_loss += loss.item()
             accumulated_samples += micro_batch_size
             
             # If we've processed an entire effective batch, update weights
-            if accumulated_samples >= args.batch_size or (step == total_steps - 1 and _ == gradient_accumulation_steps - 1):
+            if accumulated_samples >= args.batch_size or (step == total_steps - 1 and acc_step == gradient_accumulation_steps - 1):
                 # Clip gradients to prevent explosion (common with FP16)
+                nvtx_range_push("grad_clip_and_step")
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 
                 # Update weights
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
+                nvtx_range_pop()
                 
                 # Update step counter and progress
                 step += 1
@@ -207,13 +242,22 @@ def main(rank, world_size):
                     
                 if step >= total_steps:
                     break
+            
+            nvtx_range_pop()  # End of grad_accum_step
+        
+        nvtx_range_pop()  # End of training_step
 
     if progress_bar is not None:
         progress_bar.close()
-
+    
+    nvtx_range_pop()  # End of training_loop
+    
     destroy_process_group()
+    nvtx_range_pop()  # End of main
 
 if __name__ == "__main__":
+    nvtx_range_push("program_start")
     world_size = torch.cuda.device_count()
     #world_size = 1
     mp.spawn(main, args=(world_size,), nprocs=world_size)
+    nvtx_range_pop()  # End of program
