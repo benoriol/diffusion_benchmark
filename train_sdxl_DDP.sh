@@ -112,12 +112,12 @@ fi
 # Run the training script with or without profiling
 if [ "$PROFILE" = true ]; then
     echo "Starting training with NVIDIA Nsight Systems profiling..."
-    nsys profile --stats=true \
+    nsys profile \
+        --stats=true \
         --force-overwrite true \
         --output "$PROFILE_OUTPUT" \
         --trace=cuda,nvtx,osrt,cudnn,cublas \
         --sample=cpu \
-        --stats=true \
         python train_sdxl_DDP.py "${PYTHON_ARGS[@]}"
 else
     echo "Starting training..."
