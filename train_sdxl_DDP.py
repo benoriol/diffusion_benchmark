@@ -15,7 +15,7 @@ import torch.multiprocessing as mp
 
 # Import NVTX for profiling
 try:
-    import nvtx
+    import torch.cuda.nvtx as nvtx
     NVTX_AVAILABLE = True
 except ImportError:
     NVTX_AVAILABLE = False
