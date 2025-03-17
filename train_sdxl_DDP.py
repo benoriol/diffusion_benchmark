@@ -219,6 +219,7 @@ def main(rank, world_size):
                 with model.no_sync():
                     scaled_loss.backward()
             else:
+                print("syncing gradients")
                 # On the last accumulation step, allow gradient synchronization
                 scaled_loss.backward()
             nvtx_range_pop()
@@ -250,7 +251,7 @@ def main(rank, world_size):
 
                 if step % 10 == 0:  # Update loss display every 10 steps
                     if progress_bar is not None:
-                        progress_bar.set_postfix({"loss": f"{total_loss/10:.4f}", "time/step": f"{avg_time_per_step:.2f}s"})
+                        progress_bar.set_postfix({"loss": f"{total_loss/10:.4f}"})
                         total_loss = 0
                 
                 if progress_bar is not None:
