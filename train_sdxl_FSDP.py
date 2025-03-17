@@ -11,9 +11,23 @@ import numpy as np
 
 
 from torch.utils.data.distributed import DistributedSampler
-from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 import torch.multiprocessing as mp
+# Import FSDP modules
+from torch.distributed.fsdp import (
+    FullyShardedDataParallel as FSDP,
+    MixedPrecision,
+    BackwardPrefetch,
+    ShardingStrategy,
+    CPUOffload,
+)
+from torch.distributed.fsdp.wrap import (
+    transformer_auto_wrap_policy,
+    size_based_auto_wrap_policy,
+    enable_wrap,
+    wrap,
+)
+from diffusers.models.attention import Attention
 
 # Import NVTX for profiling
 try:
@@ -33,6 +47,17 @@ parser.add_argument("--dataset_size", type=int, default=1000, help="Number of sa
 parser.add_argument("--image_size", type=int, default=128, help="Image size for training")
 parser.add_argument("--num_workers", type=int, default=4, help="Number of workers for dataloader")
 parser.add_argument("--profile", action="store_true", help="Enable NVTX profiling markers")
+# FSDP specific arguments
+parser.add_argument("--sharding_strategy", type=str, default="FULL_SHARD", 
+                    choices=["FULL_SHARD", "SHARD_GRAD_OP", "NO_SHARD"],
+                    help="FSDP sharding strategy")
+parser.add_argument("--min_params_per_shard", type=int, default=1e6, 
+                    help="Minimum parameters per shard for auto wrap policy")
+parser.add_argument("--cpu_offload", action="store_true", 
+                    help="Enable CPU offloading for FSDP")
+parser.add_argument("--backward_prefetch", type=str, default="BACKWARD_PRE", 
+                    choices=["BACKWARD_PRE", "BACKWARD_POST", "NO_PREFETCH"],
+                    help="FSDP backward prefetch strategy")
 
 args = parser.parse_args()
 
@@ -49,8 +74,8 @@ def nvtx_range_pop():
         nvtx.range_pop()
 
 
-def ddp_setup(rank, world_size):
-    nvtx_range_push("ddp_setup")
+def fsdp_setup(rank, world_size):
+    nvtx_range_push("fsdp_setup")
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["MASTER_PORT"] = "12355"
     torch.cuda.set_device(rank)
@@ -94,7 +119,7 @@ class RandomNoiseDataset(Dataset):
 
 def main(rank, world_size):
     nvtx_range_push("main")
-    ddp_setup(rank, world_size)
+    fsdp_setup(rank, world_size)
     # Device
     device = torch.device(f"cuda:{rank}")
 
@@ -107,10 +132,51 @@ def main(rank, world_size):
     model.enable_gradient_checkpointing()
     nvtx_range_pop()
 
-    nvtx_range_push("optimizer_setup")
-    optimizer = bnb.optim.Adam8bit(model.parameters(), lr=args.learning_rate)
+    nvtx_range_push("fsdp_setup")
+    # Configure FSDP mixed precision policy
+    mixed_precision_policy = MixedPrecision(
+        param_dtype=torch.float16,
+        reduce_dtype=torch.float16,
+        buffer_dtype=torch.float16,
+    )
     
-    model = DDP(model, device_ids=[rank])
+    # Configure CPU offloading if enabled
+    cpu_offload = CPUOffload(offload_params=args.cpu_offload)
+    
+    # Configure backward prefetch
+    if args.backward_prefetch == "BACKWARD_PRE":
+        backward_prefetch = BackwardPrefetch.BACKWARD_PRE
+    elif args.backward_prefetch == "BACKWARD_POST":
+        backward_prefetch = BackwardPrefetch.BACKWARD_POST
+    else:
+        backward_prefetch = None
+    
+    # Configure sharding strategy
+    if args.sharding_strategy == "FULL_SHARD":
+        sharding_strategy = ShardingStrategy.FULL_SHARD
+    elif args.sharding_strategy == "SHARD_GRAD_OP":
+        sharding_strategy = ShardingStrategy.SHARD_GRAD_OP
+    else:
+        sharding_strategy = ShardingStrategy.NO_SHARD
+    
+    # Define auto wrap policy
+    auto_wrap_policy = size_based_auto_wrap_policy(
+        min_num_params=args.min_params_per_shard,
+    )
+    
+    # Wrap model with FSDP
+    model = FSDP(
+        model,
+        auto_wrap_policy=auto_wrap_policy,
+        mixed_precision=mixed_precision_policy,
+        sharding_strategy=sharding_strategy,
+        cpu_offload=cpu_offload,
+        backward_prefetch=backward_prefetch,
+        device_id=device,
+    )
+    
+    # Create optimizer after FSDP wrapping
+    optimizer = bnb.optim.Adam8bit(model.parameters(), lr=args.learning_rate)
     nvtx_range_pop()
 
     # Noise scheduler
@@ -194,21 +260,21 @@ def main(rank, world_size):
             
             # Forward pass with autocast
             nvtx_range_push("forward_pass")
-            with autocast():
-                # Pass all required arguments to the UNet
-                noise_pred = model(
-                    noisy_latents,
-                    timesteps,
-                    encoder_hidden_states=text_embeddings,
-                    added_cond_kwargs={
-                        "text_embeds": text_embeds,
-                        "time_ids": time_ids
-                    }
-                ).sample
-                loss = torch.nn.functional.mse_loss(noise_pred, noise)
-                
-                # Scale the loss to account for gradient accumulation
-                scaled_loss = loss / gradient_accumulation_steps
+            # Note: FSDP already handles mixed precision, so we can remove autocast
+            # Pass all required arguments to the UNet
+            noise_pred = model(
+                noisy_latents,
+                timesteps,
+                encoder_hidden_states=text_embeddings,
+                added_cond_kwargs={
+                    "text_embeds": text_embeds,
+                    "time_ids": time_ids
+                }
+            ).sample
+            loss = torch.nn.functional.mse_loss(noise_pred, noise)
+            
+            # Scale the loss to account for gradient accumulation
+            scaled_loss = loss / gradient_accumulation_steps
             nvtx_range_pop()
             
             # Backward pass
