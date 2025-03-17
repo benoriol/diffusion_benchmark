@@ -147,10 +147,12 @@ def main(rank, world_size):
     else:
         progress_bar = None
     step = 0
-    accumulated_samples = 0
 
     # Start timing for total training time
     total_training_start_time = time.time()
+
+    # Create an iterator for the dataloader
+    dataloader_iter = iter(dataloader)
 
     while step < total_steps:
         nvtx_range_push(f"training_step_{step}")
@@ -160,14 +162,14 @@ def main(rank, world_size):
         # Gradient accumulation loop
         accumulated_loss = 0
         
-        
+        # Loop for gradient accumulation
         for acc_step in range(gradient_accumulation_steps):
             nvtx_range_push(f"grad_accum_step_{acc_step}")
             # Get next batch
             nvtx_range_push("data_loading")
             try:
                 batch = next(dataloader_iter)
-            except (StopIteration, NameError):
+            except StopIteration:
                 dataloader_iter = iter(dataloader)
                 batch = next(dataloader_iter)
             nvtx_range_pop()
@@ -214,53 +216,40 @@ def main(rank, world_size):
             
             # Backward pass
             nvtx_range_push("backward_pass")
-            # Use no_sync for all but the last accumulation step to avoid synchronizing gradients
-            if acc_step < gradient_accumulation_steps - 1 or accumulated_samples < args.batch_size:
+            # Use no_sync for all but the last accumulation step to avoid unnecessary gradient synchronization
+            if acc_step < gradient_accumulation_steps - 1:
                 with model.no_sync():
                     scaled_loss.backward()
+                print("no sync")
             else:
-                print("syncing gradients")
                 # On the last accumulation step, allow gradient synchronization
                 scaled_loss.backward()
+                print("sync")
             nvtx_range_pop()
             
-                
             accumulated_loss += loss.item()
-            accumulated_samples += micro_batch_size
             
-            # If we've processed an entire effective batch, update weights
-            if accumulated_samples >= args.batch_size or (step == total_steps - 1 and acc_step == gradient_accumulation_steps - 1):
-                # Clip gradients to prevent explosion (common with FP16)
-                nvtx_range_push("grad_clip_and_step")
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                
-                # Update weights
-                optimizer.step()
-                optimizer.zero_grad(set_to_none=True)
-                nvtx_range_pop()
-                
-                
-                # Update step counter and progress
-                step += 1
-                total_loss += accumulated_loss / gradient_accumulation_steps
-                
-                # Reset accumulation counters
-                accumulated_samples = 0
-                accumulated_loss = 0
-                
-
-                if step % 10 == 0:  # Update loss display every 10 steps
-                    if progress_bar is not None:
-                        progress_bar.set_postfix({"loss": f"{total_loss/10:.4f}"})
-                        total_loss = 0
-                
-                if progress_bar is not None:
-                    progress_bar.update(1)
-                    
-                if step >= total_steps:
-                    break
-                            
             nvtx_range_pop()  # End of grad_accum_step
+        
+        # After accumulation is complete, update the weights
+        nvtx_range_push("grad_clip_and_step")
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        
+        # Update weights
+        optimizer.step()
+        nvtx_range_pop()
+        
+        # Update step counter and progress
+        step += 1
+        total_loss += accumulated_loss / gradient_accumulation_steps
+        
+        if step % 10 == 0:  # Update loss display every 10 steps
+            if progress_bar is not None:
+                progress_bar.set_postfix({"loss": f"{total_loss/10:.4f}"})
+                total_loss = 0
+        
+        if progress_bar is not None:
+            progress_bar.update(1)
         
         nvtx_range_pop()  # End of training_step
 
