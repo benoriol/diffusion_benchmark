@@ -110,7 +110,8 @@ def main(rank, world_size):
     nvtx_range_push("optimizer_setup")
     optimizer = bnb.optim.Adam8bit(model.parameters(), lr=args.learning_rate)
     
-    model = DDP(model, device_ids=[rank])
+    # Initialize DDP with find_unused_parameters=False for better performance
+    model = DDP(model, device_ids=[rank], find_unused_parameters=False, gradient_as_bucket_view=True)
     nvtx_range_pop()
 
     # Noise scheduler
@@ -213,7 +214,13 @@ def main(rank, world_size):
             
             # Backward pass
             nvtx_range_push("backward_pass")
-            scaled_loss.backward()
+            # Use no_sync for all but the last accumulation step to avoid synchronizing gradients
+            if acc_step < gradient_accumulation_steps - 1 or accumulated_samples < args.batch_size:
+                with model.no_sync():
+                    scaled_loss.backward()
+            else:
+                # On the last accumulation step, allow gradient synchronization
+                scaled_loss.backward()
             nvtx_range_pop()
             
                 
@@ -268,7 +275,6 @@ def main(rank, world_size):
         # Print total training time statistics
         print("\n===== Training Time Statistics =====")
         print(f"Total training time: {total_training_time:.4f}s")
-        print(f"Average time per step: {avg_time_per_step:.4f}s")
         print(f"Total steps completed: {total_steps}")
         print(f"Overall throughput: {(args.batch_size * total_steps) / total_training_time:.2f} samples/second")
         print("===================================")
