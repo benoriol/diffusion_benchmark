@@ -26,8 +26,8 @@ except ImportError:
 # Parse command line arguments
 parser = argparse.ArgumentParser(description="Train Stable Diffusion XL on random noise")
 parser.add_argument("--steps", type=int, default=100, help="Number of training steps")
-parser.add_argument("--batch_size", type=int, default=32, help="Batch size for training")
-parser.add_argument("--micro_batch_size", type=int, default=1, help="Micro batch size for gradient accumulation")
+parser.add_argument("--batch_size", type=int, default=32, help="Global batch size for training across all GPUs")
+parser.add_argument("--micro_batch_size", type=int, default=1, help="Micro batch size per GPU")
 parser.add_argument("--learning_rate", type=float, default=1e-5, help="Learning rate")
 parser.add_argument("--dataset_size", type=int, default=1000, help="Number of samples in dataset")
 parser.add_argument("--image_size", type=int, default=128, help="Image size for training")
@@ -35,9 +35,6 @@ parser.add_argument("--num_workers", type=int, default=4, help="Number of worker
 parser.add_argument("--profile", action="store_true", help="Enable NVTX profiling markers")
 
 args = parser.parse_args()
-
-# Calculate gradient accumulation steps
-gradient_accumulation_steps = max(1, args.batch_size // args.micro_batch_size)
 
 # Profiling helper functions
 def nvtx_range_push(msg):
@@ -97,6 +94,9 @@ def main(rank, world_size):
     ddp_setup(rank, world_size)
     # Device
     device = torch.device(f"cuda:{rank}")
+
+    # Calculate gradient accumulation steps correctly to ensure global batch size = batch_size
+    gradient_accumulation_steps = max(1, args.batch_size // (args.micro_batch_size * world_size))
 
     # Model with FP16
     nvtx_range_push("model_loading")
