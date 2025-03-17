@@ -220,11 +220,11 @@ def main(rank, world_size):
             if acc_step < gradient_accumulation_steps - 1:
                 with model.no_sync():
                     scaled_loss.backward()
-                print("no sync")
+                print(f"Rank {rank}: no sync (step {step}, acc_step {acc_step})", flush=True)
             else:
                 # On the last accumulation step, allow gradient synchronization
                 scaled_loss.backward()
-                print("sync")
+                print(f"Rank {rank}: sync (step {step}, acc_step {acc_step})", flush=True)
             nvtx_range_pop()
             
             accumulated_loss += loss.item()
@@ -263,11 +263,7 @@ def main(rank, world_size):
     # Print timing statistics
     if rank == 0:
         # Print total training time statistics
-        print("\n===== Training Time Statistics =====")
-        print(f"Total training time: {total_training_time:.4f}s")
-        print(f"Total steps completed: {total_steps}")
-        print(f"Overall throughput: {(args.batch_size * total_steps) / total_training_time:.2f} samples/second")
-        print("===================================")
+        print(f"Average time per batch: {total_training_time / total_steps:.4f}s")
         
     
     nvtx_range_pop()  # End of training_loop
