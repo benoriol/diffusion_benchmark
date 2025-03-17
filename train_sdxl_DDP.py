@@ -220,11 +220,9 @@ def main(rank, world_size):
             if acc_step < gradient_accumulation_steps - 1:
                 with model.no_sync():
                     scaled_loss.backward()
-                print(f"Rank {rank}: no sync (step {step}, acc_step {acc_step})", flush=True)
             else:
                 # On the last accumulation step, allow gradient synchronization
                 scaled_loss.backward()
-                print(f"Rank {rank}: sync (step {step}, acc_step {acc_step})", flush=True)
             nvtx_range_pop()
             
             accumulated_loss += loss.item()
