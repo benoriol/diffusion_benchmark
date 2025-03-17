@@ -134,7 +134,6 @@ def main(rank, world_size):
     total_steps = args.steps  # Total number of training steps
 
     # Timing measurements
-    batch_times = []
     
     # Training loop
     nvtx_range_push("training_loop")
@@ -149,6 +148,9 @@ def main(rank, world_size):
     step = 0
     accumulated_samples = 0
 
+    # Start timing for total training time
+    total_training_start_time = time.time()
+
     while step < total_steps:
         nvtx_range_push(f"training_step_{step}")
         # Reset gradients at the beginning of each effective batch
@@ -157,8 +159,6 @@ def main(rank, world_size):
         # Gradient accumulation loop
         accumulated_loss = 0
         
-        # Start timing for this batch
-        batch_start_time = time.time()
         
         for acc_step in range(gradient_accumulation_steps):
             nvtx_range_push(f"grad_accum_step_{acc_step}")
@@ -231,10 +231,6 @@ def main(rank, world_size):
                 optimizer.zero_grad(set_to_none=True)
                 nvtx_range_pop()
                 
-                # End timing for this batch
-                batch_end_time = time.time()
-                batch_time = batch_end_time - batch_start_time
-                batch_times.append(batch_time)
                 
                 # Update step counter and progress
                 step += 1
@@ -247,7 +243,7 @@ def main(rank, world_size):
 
                 if step % 10 == 0:  # Update loss display every 10 steps
                     if progress_bar is not None:
-                        progress_bar.set_postfix({"loss": f"{total_loss/10:.4f}", "time/batch": f"{batch_time:.2f}s"})
+                        progress_bar.set_postfix({"loss": f"{total_loss/10:.4f}", "time/step": f"{avg_time_per_step:.2f}s"})
                         total_loss = 0
                 
                 if progress_bar is not None:
@@ -255,38 +251,28 @@ def main(rank, world_size):
                     
                 if step >= total_steps:
                     break
-                
-                # Start timing for next batch
-                batch_start_time = time.time()
-            
+                            
             nvtx_range_pop()  # End of grad_accum_step
         
         nvtx_range_pop()  # End of training_step
 
+    # End timing for total training time
+    total_training_end_time = time.time()
+    total_training_time = total_training_end_time - total_training_start_time
+    
     if progress_bar is not None:
         progress_bar.close()
     
     # Print timing statistics
-    if rank == 0 and batch_times:
-        # Skip the first batch as it often includes compilation/warmup overhead
-        if len(batch_times) > 1:
-            batch_times = batch_times[1:]
+    if rank == 0:
+        # Print total training time statistics
+        print("\n===== Training Time Statistics =====")
+        print(f"Total training time: {total_training_time:.4f}s")
+        print(f"Average time per step: {avg_time_per_step:.4f}s")
+        print(f"Total steps completed: {total_steps}")
+        print(f"Overall throughput: {(args.batch_size * total_steps) / total_training_time:.2f} samples/second")
+        print("===================================")
         
-        avg_time = np.mean(batch_times)
-        median_time = np.median(batch_times)
-        min_time = np.min(batch_times)
-        max_time = np.max(batch_times)
-        std_time = np.std(batch_times)
-        
-        print("\n===== Batch Timing Statistics =====")
-        print(f"Average time per batch: {avg_time:.4f}s")
-        print(f"Median time per batch: {median_time:.4f}s")
-        print(f"Min time per batch: {min_time:.4f}s")
-        print(f"Max time per batch: {max_time:.4f}s")
-        print(f"Std dev of batch times: {std_time:.4f}s")
-        print(f"Throughput: {args.batch_size / avg_time:.2f} samples/second")
-        print(f"Total batches measured: {len(batch_times)}")
-        print("==================================")
     
     nvtx_range_pop()  # End of training_loop
     
