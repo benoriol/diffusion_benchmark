@@ -111,7 +111,7 @@ def main(rank, world_size):
     optimizer = bnb.optim.Adam8bit(model.parameters(), lr=args.learning_rate)
     
     # Initialize DDP with find_unused_parameters=False for better performance
-    model = DDP(model, device_ids=[rank], find_unused_parameters=False, gradient_as_bucket_view=True)
+    model = DDP(model, device_ids=[rank], find_unused_parameters=False, gradient_as_bucket_view=True, broadcast_buffers=False)
     nvtx_range_pop()
 
     # Noise scheduler
