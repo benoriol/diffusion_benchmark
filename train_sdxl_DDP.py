@@ -107,11 +107,34 @@ def main(rank, world_size):
     model.enable_gradient_checkpointing()
     nvtx_range_pop()
 
+    # Check and convert any BatchNorm layers to GroupNorm to avoid sync during forward pass
+    nvtx_range_push("convert_batchnorm")
+    def convert_batchnorm_to_groupnorm(module):
+        for name, child in list(module.named_children()):
+            if isinstance(child, torch.nn.BatchNorm2d):
+                num_channels = child.num_features
+                # Replace with GroupNorm (generally 32 channels per group works well)
+                setattr(module, name, torch.nn.GroupNorm(
+                    num_groups=min(32, num_channels), 
+                    num_channels=num_channels))
+            else:
+                convert_batchnorm_to_groupnorm(child)
+    
+    # SDXL UNet typically uses GroupNorm, but check to be sure
+    convert_batchnorm_to_groupnorm(model)
+    nvtx_range_pop()
+
     nvtx_range_push("optimizer_setup")
     optimizer = bnb.optim.Adam8bit(model.parameters(), lr=args.learning_rate)
     
     # Initialize DDP with find_unused_parameters=False for better performance
-    model = DDP(model, device_ids=[rank], find_unused_parameters=False, gradient_as_bucket_view=True, broadcast_buffers=False)
+    # Setting broadcast_buffers=False to prevent buffer synchronization during forward passes
+    model = DDP(model, device_ids=[rank], find_unused_parameters=False, 
+                gradient_as_bucket_view=True, broadcast_buffers=False)
+    
+    # Freeze any model buffers that might cause synchronization
+    for buffer_name, buffer in model.named_buffers():
+        buffer.requires_grad = False
     nvtx_range_pop()
 
     # Noise scheduler
@@ -162,9 +185,73 @@ def main(rank, world_size):
         # Gradient accumulation loop
         accumulated_loss = 0
         
-        # Loop for gradient accumulation
-        for acc_step in range(gradient_accumulation_steps):
-            nvtx_range_push(f"grad_accum_step_{acc_step}")
+        # *** CRITICAL CHANGE: Wrap the entire accumulation process with no_sync() ***
+        # This ensures NO communication happens until we're ready for the final update
+        with model.no_sync():
+            # Process all but the last microbatch with no gradient synchronization
+            for acc_step in range(gradient_accumulation_steps - 1):
+                nvtx_range_push(f"grad_accum_step_{acc_step}")
+                # Get next batch
+                nvtx_range_push("data_loading")
+                try:
+                    batch = next(dataloader_iter)
+                except StopIteration:
+                    dataloader_iter = iter(dataloader)
+                    batch = next(dataloader_iter)
+                nvtx_range_pop()
+                    
+                # Move all batch tensors to device
+                nvtx_range_push("data_to_device")
+                latents = batch['latent'].to(dtype=torch.float16, device=device)
+                text_embeddings = batch['text_embeddings'].to(dtype=torch.float16, device=device)
+                text_embeds = batch['text_embeds'].to(dtype=torch.float16, device=device)
+                time_ids = batch['time_ids'].to(dtype=torch.float16, device=device)
+                micro_batch_size = latents.shape[0]
+                nvtx_range_pop()
+                
+                # Sample timesteps
+                timesteps = torch.randint(
+                    0, scheduler.config.num_train_timesteps, 
+                    (micro_batch_size,), 
+                ).long().to(device)
+                
+                # Add noise to latents
+                nvtx_range_push("add_noise")
+                noise = torch.randn_like(latents)
+                noisy_latents = scheduler.add_noise(latents, noise, timesteps)
+                nvtx_range_pop()
+                
+                # Forward pass with autocast - NO SYNC DURING THIS FORWARD PASS
+                nvtx_range_push("forward_pass_no_sync")
+                with autocast():
+                    # Pass all required arguments to the UNet
+                    noise_pred = model(
+                        noisy_latents,
+                        timesteps,
+                        encoder_hidden_states=text_embeddings,
+                        added_cond_kwargs={
+                            "text_embeds": text_embeds,
+                            "time_ids": time_ids
+                        }
+                    ).sample
+                    loss = torch.nn.functional.mse_loss(noise_pred, noise)
+                    
+                    # Scale the loss to account for gradient accumulation
+                    scaled_loss = loss / gradient_accumulation_steps
+                nvtx_range_pop()
+                
+                # Backward pass - STILL NO SYNC
+                nvtx_range_push("backward_pass_no_sync")
+                scaled_loss.backward()
+                nvtx_range_pop()
+                
+                accumulated_loss += loss.item()
+                
+                nvtx_range_pop()  # End of grad_accum_step
+        
+        # Process final microbatch WITH gradient synchronization (outside the no_sync context)
+        if gradient_accumulation_steps > 0:
+            nvtx_range_push(f"last_grad_accum_step")
             # Get next batch
             nvtx_range_push("data_loading")
             try:
@@ -195,8 +282,8 @@ def main(rank, world_size):
             noisy_latents = scheduler.add_noise(latents, noise, timesteps)
             nvtx_range_pop()
             
-            # Forward pass with autocast
-            nvtx_range_push("forward_pass")
+            # Forward pass with autocast - THIS WILL SYNC ON BACKWARD!
+            nvtx_range_push("forward_pass_with_sync")
             with autocast():
                 # Pass all required arguments to the UNet
                 noise_pred = model(
@@ -214,20 +301,14 @@ def main(rank, world_size):
                 scaled_loss = loss / gradient_accumulation_steps
             nvtx_range_pop()
             
-            # Backward pass
-            nvtx_range_push("backward_pass")
-            # Use no_sync for all but the last accumulation step to avoid unnecessary gradient synchronization
-            if acc_step < gradient_accumulation_steps - 1:
-                with model.no_sync():
-                    scaled_loss.backward()
-            else:
-                # On the last accumulation step, allow gradient synchronization
-                scaled_loss.backward()
+            # Backward pass with sync (since we're outside the no_sync context)
+            nvtx_range_push("backward_pass_with_sync")
+            scaled_loss.backward()
             nvtx_range_pop()
             
             accumulated_loss += loss.item()
             
-            nvtx_range_pop()  # End of grad_accum_step
+            nvtx_range_pop()  # End of last_grad_accum_step
         
         # After accumulation is complete, update the weights
         nvtx_range_push("grad_clip_and_step")
