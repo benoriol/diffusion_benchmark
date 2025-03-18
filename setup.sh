@@ -5,3 +5,5 @@ sudo apt install nsight-systems
 pip3 install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
 pip install diffusers["torch"] transformers
 pip install bitsandbytes
+
+export CUDA_VISIBLE_DEVICES=0; bash train_sdxl_DDP.sh --steps 1 --micro-batch-size 1 --batch-size 1
