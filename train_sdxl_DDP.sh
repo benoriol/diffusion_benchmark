@@ -1,5 +1,7 @@
 #!/bin/bash
 
+# export CUDA_VISIBLE_DEVICES=0; for bs in 4 8 16 32; do bash train_sdxl_DDP.sh --steps 20 --micro-batch-size 2 --batch-size $bs; done; export CUDA_VISIBLE_DEVICES=0,1; for bs in 4 8 16 32; do bash train_sdxl_DDP.sh --steps 20 --micro-batch-size 2 --batch-size $bs; done
+
 # Default parameters
 STEPS=100
 BATCH_SIZE=16
@@ -83,15 +85,6 @@ echo "Running SDXL training with the following configuration:"
 echo "  Steps: $STEPS"
 echo "  Batch size: $BATCH_SIZE"
 echo "  Micro batch size: $MICRO_BATCH_SIZE"
-echo "  Learning rate: $LEARNING_RATE"
-echo "  Dataset size: $DATASET_SIZE"
-echo "  Image size: $IMAGE_SIZE"
-echo "  Number of workers: $NUM_WORKERS"
-echo "  Profiling: $PROFILE"
-if [ "$PROFILE" = true ]; then
-    echo "  Profile output: $PROFILE_OUTPUT"
-fi
-echo ""
 
 # Common arguments for both profiling and non-profiling runs
 PYTHON_ARGS=(
