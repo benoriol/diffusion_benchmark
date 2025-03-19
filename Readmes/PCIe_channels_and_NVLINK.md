@@ -22,7 +22,7 @@ The setting I used might be somewhat different from the "Local LLama"-specific n
 
 I am reporting the batch time / batch size * #GPUs. I expect the single GPU to be optimal in this metric since there is no communication overhead and by multiplying by number of GPUs there is no advantage in number of flops in this metric. The question is how close can we get to single-gpu efficiency via dual-gpu.
 
-Because DDP syncronizes gradients once per batch, the larger the batch size the longer forward/backward will take and the less relative importance will the communication overhead have. For the record this is done by accumulating gradients over minibatches, with no synchronization between gpus until the whole batch is done.
+Because DDP synchronizes gradients once per batch, the larger the batch size the longer forward/backward will take and the less relative importance will the communication overhead have. For the record this is done by accumulating gradients over minibatches, with no synchronization between gpus until the whole batch is done.
 
 Now the promised plots.
 
