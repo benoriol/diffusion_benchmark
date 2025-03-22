@@ -33,3 +33,21 @@ pip install hf_transfer
 
 # THis will download the model
 export CUDA_VISIBLE_DEVICES=0; bash train_sdxl_DDP.sh --steps 1 --micro-batch-size 1 --batch-size 1
+
+
+echo "Done!"
+echo "you can now run the benchmarks with:"
+echo 'export CUDA_VISIBLE_DEVICES=0
+for bs in 4 8 16 32; do
+    bash train_sdxl_DDP.sh \
+        --steps 100 \
+        --micro-batch-size 2 \
+        --batch-size $bs
+done
+export CUDA_VISIBLE_DEVICES=0,1
+for bs in 4 8 16 32; do
+    bash train_sdxl_DDP.sh \
+        --steps 100 \
+        --micro-batch-size 2 \
+        --batch-size $bs
+done'
