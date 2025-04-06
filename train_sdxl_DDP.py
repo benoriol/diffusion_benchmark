@@ -173,6 +173,7 @@ def main(rank, world_size):
 
     # Start timing for total training time
     total_training_start_time = time.time()
+    timed_training_start_time = None # Initialize timer for steps after warmup
 
     # Create an iterator for the dataloader
     dataloader_iter = iter(dataloader)
@@ -329,27 +330,39 @@ def main(rank, world_size):
         
         if progress_bar is not None:
             progress_bar.update(1)
-        
+
+        # Start timing after the first 5 warmup steps
+        if step == 5 and timed_training_start_time is None:
+            torch.cuda.synchronize()
+            timed_training_start_time = time.time()
+
         nvtx_range_pop()  # End of training_step
 
     # End timing for total training time
     total_training_end_time = time.time()
+    timed_training_end_time = time.time() # End time for timed steps
     total_training_time = total_training_end_time - total_training_start_time
-    
+
     if progress_bar is not None:
         progress_bar.close()
-    
+
     # Print timing statistics
     if rank == 0:
-        # Print total training time statistics
-        print(f"Average time per batch: {total_training_time / total_steps:.4f}s")
-        
-    
+        # Calculate timed duration and steps
+        timed_steps = max(0, total_steps - 5)
+        if timed_training_start_time is not None and timed_steps > 0:
+            timed_training_duration = timed_training_end_time - timed_training_start_time
+            avg_time_per_timed_batch = timed_training_duration / timed_steps
+            print(f"Batch size: {args.batch_size}, Time per batch: {avg_time_per_timed_batch:.4f}s")
+        else:
+            print("Not enough steps to measure performance (need > 5 steps)")
+
+
     nvtx_range_pop()  # End of training_loop
     
     destroy_process_group()
     nvtx_range_pop()  # End of main
-
+    
 if __name__ == "__main__":
     nvtx_range_push("program_start")
     world_size = torch.cuda.device_count()
