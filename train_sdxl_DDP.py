@@ -366,6 +366,6 @@ def main(rank, world_size):
 if __name__ == "__main__":
     nvtx_range_push("program_start")
     world_size = torch.cuda.device_count()
-    #world_size = 1
+    assert world_size > 0, "This script requires at least 1 GPU"
     mp.spawn(main, args=(world_size,), nprocs=world_size)
     nvtx_range_pop()  # End of program
